@@ -30,57 +30,81 @@ if (!CLIENT_ID) console.warn('⚠️ CLIENT_ID is missing!');
 const client = new Client({
   intents: [GatewayIntentBits.Guilds]
 });
+
 /* ================= DATA STORAGE ================= */
 const rainbowFile = './rainbowData.json';
-if (!fs.existsSync(rainbowFile)) fs.writeFileSync(rainbowFile, '{}');
+
+if (!fs.existsSync(rainbowFile)) {
+  fs.writeFileSync(rainbowFile, '{}');
+}
+
 let rainbowData = JSON.parse(fs.readFileSync(rainbowFile));
 
-const saveData = () =>
+const saveData = () => {
   fs.writeFileSync(rainbowFile, JSON.stringify(rainbowData, null, 2));
+};
 
 /* ================= ACTIVE INTERVALS ================= */
 const activeIntervals = {};
 
-/* ================= COLOR EFFECT ================= */
+/* ================= RAINBOW COLOR FUNCTION (FIXED) ================= */
 function getRainbowColor(step) {
   const f = 0.3;
-  const r = Math.sin(f * step + 0) * 127 + 128;
-  const g = Math.sin(f * step + 2) * 127 + 128;
-  const b = Math.sin(f * step + 4) * 127 + 128;
-  return (r << 16) + (g << 8) + b;
+
+  const r = Math.floor(Math.sin(f * step + 0) * 127 + 128);
+  const g = Math.floor(Math.sin(f * step + 2) * 127 + 128);
+  const b = Math.floor(Math.sin(f * step + 4) * 127 + 128);
+
+  // Return integer color (BEST for discord.js v14)
+  return (r << 16) | (g << 8) | b;
 }
 
+/* ================= START RAINBOW ================= */
 function startRainbow(guildId, roleId, speed) {
   let step = 0;
-  clearInterval(activeIntervals[roleId]);
+
+  // Clear previous interval if exists
+  if (activeIntervals[roleId]) {
+    clearInterval(activeIntervals[roleId]);
+  }
 
   activeIntervals[roleId] = setInterval(async () => {
     try {
       const guild = await client.guilds.fetch(guildId);
       const role = await guild.roles.fetch(roleId);
-      if (!role || !role.editable) return;
 
-      const color = `#${getRainbowColor(step++).toString(16).padStart(6, '0')}`;
+      if (!role || !role.editable) {
+        stopEffect(roleId);
+        return;
+      }
+
+      const color = getRainbowColor(step++);
       await role.setColor(color);
-    } catch (e) {
-      console.error('Rainbow error:', e);
-      clearInterval(activeIntervals[roleId]);
+
+    } catch (error) {
+      console.error('🌈 Rainbow error:', error.message);
+      stopEffect(roleId);
     }
   }, Math.max(speed, 500));
 }
 
+/* ================= STOP EFFECT ================= */
 function stopEffect(roleId) {
-  clearInterval(activeIntervals[roleId]);
-  delete activeIntervals[roleId];
+  if (activeIntervals[roleId]) {
+    clearInterval(activeIntervals[roleId]);
+    delete activeIntervals[roleId];
+  }
 }
 
 /* ================= READY ================= */
 client.once('ready', () => {
   console.log(`✅ Logged in as ${client.user.tag}`);
 
-  for (const g in rainbowData) {
-    for (const r in rainbowData[g]) {
-      startRainbow(g, r, rainbowData[g][r]);
+  // Restart saved rainbow roles
+  for (const guildId in rainbowData) {
+    for (const roleId in rainbowData[guildId]) {
+      const speed = rainbowData[guildId][roleId];
+      startRainbow(guildId, roleId, speed);
     }
   }
 });
@@ -91,32 +115,35 @@ if (CLIENT_ID && TOKEN) {
     new SlashCommandBuilder()
       .setName('rainbow-start')
       .setDescription('Start rainbow effect')
-      .addRoleOption(o =>
-        o.setName('role')
-         .setDescription('Role to apply rainbow effect to')
-         .setRequired(true)
+      .addRoleOption(option =>
+        option.setName('role')
+          .setDescription('Role to apply rainbow effect to')
+          .setRequired(true)
       )
-      .addIntegerOption(o =>
-        o.setName('speed')
-         .setDescription('Speed in milliseconds (minimum 500)')
-         .setRequired(false)
+      .addIntegerOption(option =>
+        option.setName('speed')
+          .setDescription('Speed in milliseconds (minimum 500)')
+          .setRequired(false)
       ),
 
     new SlashCommandBuilder()
       .setName('rainbow-stop')
       .setDescription('Stop rainbow effect')
-      .addRoleOption(o =>
-        o.setName('role')
-         .setDescription('Role to stop rainbow effect on')
-         .setRequired(true)
+      .addRoleOption(option =>
+        option.setName('role')
+          .setDescription('Role to stop rainbow effect on')
+          .setRequired(true)
       )
-  ].map(c => c.toJSON());
+  ].map(command => command.toJSON());
 
   const rest = new REST({ version: '10' }).setToken(TOKEN);
 
   (async () => {
     try {
-      await rest.put(Routes.applicationCommands(CLIENT_ID), { body: commands });
+      await rest.put(
+        Routes.applicationCommands(CLIENT_ID),
+        { body: commands }
+      );
       console.log('✅ Slash commands registered');
     } catch (err) {
       console.error('❌ Failed to register slash commands:', err);
@@ -145,9 +172,12 @@ client.on('interactionCreate', async interaction => {
     });
   }
 
+  /* ===== START ===== */
   if (interaction.commandName === 'rainbow-start') {
-    if (!rainbowData[interaction.guild.id])
+
+    if (!rainbowData[interaction.guild.id]) {
       rainbowData[interaction.guild.id] = {};
+    }
 
     rainbowData[interaction.guild.id][role.id] = speed;
     saveData();
@@ -157,13 +187,15 @@ client.on('interactionCreate', async interaction => {
     await interaction.reply(`🌈 Rainbow started on **${role.name}**`);
   }
 
+  /* ===== STOP ===== */
   if (interaction.commandName === 'rainbow-stop') {
+
     stopEffect(role.id);
 
-    if (rainbowData[interaction.guild.id])
+    if (rainbowData[interaction.guild.id]) {
       delete rainbowData[interaction.guild.id][role.id];
-
-    saveData();
+      saveData();
+    }
 
     await interaction.reply(`🛑 Rainbow stopped on **${role.name}**`);
   }
