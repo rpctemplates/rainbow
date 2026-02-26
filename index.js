@@ -28,7 +28,7 @@ if (!CLIENT_ID) console.warn('⚠️ CLIENT_ID is missing!');
 
 /* ================= DISCORD CLIENT ================= */
 const client = new Client({
-  intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMembers]
+  intents: [GatewayIntentBits.Guilds]
 });
 
 /* ================= DATA STORAGE ================= */
