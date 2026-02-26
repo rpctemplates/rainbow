@@ -170,7 +170,7 @@ client.on('interactionCreate', async interaction => {
 });
 
 /* ============================================================
-   🌐 PUBLIC ADVANCED DASHBOARD
+   🌐 FULL PUBLIC RAINBOW DASHBOARD
 ============================================================ */
 
 const app = express();
@@ -183,54 +183,16 @@ app.get('/', (_, res) => {
 <head>
   <title>🌈 Rainbow Dashboard</title>
   <style>
-    body {
-      font-family: Arial, sans-serif;
-      background: #0f172a;
-      color: white;
-      padding: 30px;
-    }
-
-    h1 {
-      text-align: center;
-      margin-bottom: 30px;
-    }
-
-    .card {
-      background: #1e293b;
-      padding: 20px;
-      border-radius: 12px;
-      margin-bottom: 20px;
-      box-shadow: 0 0 20px rgba(0,0,0,0.4);
-    }
-
-    button {
-      background: #ef4444;
-      border: none;
-      padding: 8px 14px;
-      border-radius: 8px;
-      color: white;
-      cursor: pointer;
-      font-weight: bold;
-    }
-
-    button:hover {
-      background: #dc2626;
-    }
-
-    .guild-title {
-      font-size: 20px;
-      margin-bottom: 10px;
-      color: #38bdf8;
-    }
-
-    .role-row {
-      display: flex;
-      justify-content: space-between;
-      margin: 6px 0;
-      padding: 6px;
-      background: #334155;
-      border-radius: 6px;
-    }
+    body { font-family: Arial,sans-serif; background:#0f172a; color:white; padding:30px; }
+    h1 { text-align:center; margin-bottom:30px; }
+    .card { background:#1e293b; padding:20px; border-radius:12px; margin-bottom:20px; box-shadow:0 0 20px rgba(0,0,0,0.4); }
+    button { background:#10b981; border:none; padding:6px 12px; border-radius:6px; color:white; cursor:pointer; font-weight:bold; }
+    button.stop { background:#ef4444; }
+    button:hover { opacity:0.9; }
+    .guild-title { font-size:20px; margin-bottom:10px; color:#38bdf8; }
+    .role-row { display:flex; align-items:center; justify-content:space-between; margin:6px 0; padding:6px; background:#334155; border-radius:6px; }
+    .color-box { width:30px; height:20px; border-radius:4px; display:inline-block; margin-left:10px; }
+    input[type="number"] { width:70px; padding:4px; border-radius:4px; border:none; margin-left:5px; }
   </style>
 </head>
 <body>
@@ -255,7 +217,6 @@ async function loadData() {
   for (const guildId in data) {
     const card = document.createElement('div');
     card.className = 'card';
-
     card.innerHTML += '<div class="guild-title">Guild ID: ' + guildId + '</div>';
 
     for (const roleId in data[guildId]) {
@@ -263,10 +224,16 @@ async function loadData() {
 
       const row = document.createElement('div');
       row.className = 'role-row';
-
       row.innerHTML = \`
-        <span>Role ID: \${roleId} (Speed: \${speed}ms)</span>
-        <button onclick="stopRole('\${guildId}','\${roleId}')">Stop</button>
+        <span>
+          Role ID: \${roleId} 
+          <input type="number" min="500" value="\${speed}" id="speed-\${guildId}-\${roleId}">ms
+          <div class="color-box" id="color-\${guildId}-\${roleId}"></div>
+        </span>
+        <span>
+          <button onclick="startRole('\${guildId}','\${roleId}')" >Start</button>
+          <button class="stop" onclick="stopRole('\${guildId}','\${roleId}')">Stop</button>
+        </span>
       \`;
 
       card.appendChild(row);
@@ -276,6 +243,21 @@ async function loadData() {
   }
 }
 
+// Start a rainbow role
+async function startRole(guildId, roleId) {
+  const speedInput = document.getElementById(\`speed-\${guildId}-\${roleId}\`);
+  const speed = Math.max(parseInt(speedInput.value)||1000, 500);
+
+  await fetch('/api/start', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ guildId, roleId, speed })
+  });
+
+  loadData();
+}
+
+// Stop a rainbow role
 async function stopRole(guildId, roleId) {
   await fetch('/api/stop', {
     method: 'POST',
@@ -286,9 +268,21 @@ async function stopRole(guildId, roleId) {
   loadData();
 }
 
-// Auto-refresh every 5 seconds
-setInterval(loadData, 5000);
+// Update color previews
+async function updateColors() {
+  const res = await fetch('/api/activeColors');
+  const data = await res.json();
+  for (const guildId in data) {
+    for (const roleId in data[guildId]) {
+      const colorBox = document.getElementById(\`color-\${guildId}-\${roleId}\`);
+      if (colorBox) colorBox.style.background = '#' + data[guildId][roleId].toString(16).padStart(6,'0');
+    }
+  }
+}
+
+setInterval(() => { loadData(); updateColors(); }, 3000);
 loadData();
+updateColors();
 </script>
 
 </body>
@@ -296,13 +290,24 @@ loadData();
   `);
 });
 
-/* ========= API ========= */
+/* ========= PUBLIC API ========= */
 
-// Public API: anyone can access
-app.get('/api/data', (_, res) => {
-  res.json(rainbowData);
+app.get('/api/data', (_, res) => res.json(rainbowData));
+
+// Start rainbow role
+app.post('/api/start', (req, res) => {
+  const { guildId, roleId, speed } = req.body;
+
+  if (!rainbowData[guildId]) rainbowData[guildId] = {};
+  rainbowData[guildId][roleId] = speed;
+  saveData();
+
+  activeRoles.set(roleId, { guildId, speed, step: 0, lastColor: null });
+
+  res.json({ success: true });
 });
 
+// Stop rainbow role
 app.post('/api/stop', (req, res) => {
   const { guildId, roleId } = req.body;
 
@@ -315,9 +320,17 @@ app.post('/api/stop', (req, res) => {
   res.json({ success: true });
 });
 
-app.listen(PORT, () => {
-  console.log("🌐 Public dashboard running on port", PORT);
+// Provide live color preview
+app.get('/api/activeColors', (_, res) => {
+  const colors = {};
+  activeRoles.forEach((data, roleId) => {
+    if (!colors[data.guildId]) colors[data.guildId] = {};
+    colors[data.guildId][roleId] = data.lastColor || 0;
+  });
+  res.json(colors);
 });
+
+app.listen(PORT, () => console.log("🌐 Fully public rainbow dashboard running on port", PORT));
 
 /* ============================================================
    LOGIN
