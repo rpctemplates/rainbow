@@ -9,201 +9,199 @@ const {
   PermissionsBitField
 } = require('discord.js');
 
-const fs = require('fs');
 const express = require('express');
+const fs = require('fs');
 
-/* ================= EXPRESS (uptime for Railway) ================= */
-const app = express();
-const PORT = process.env.PORT || 3000;
-
-app.get('/', (_, res) => res.send('🌈 Rainbow Bot is alive!'));
-app.listen(PORT, () => console.log(`Web server running on port ${PORT}`));
-
-/* ================= ENVIRONMENT VARIABLES ================= */
+/* ================= ENV ================= */
 const TOKEN = process.env.DISCORD_TOKEN;
 const CLIENT_ID = process.env.CLIENT_ID;
+const PORT = process.env.PORT || 3000;
 
-if (!TOKEN) console.warn('⚠️ DISCORD_TOKEN is missing!');
-if (!CLIENT_ID) console.warn('⚠️ CLIENT_ID is missing!');
+if (!TOKEN || !CLIENT_ID) {
+  console.log("Missing TOKEN or CLIENT_ID");
+}
 
 /* ================= DISCORD CLIENT ================= */
 const client = new Client({
   intents: [GatewayIntentBits.Guilds]
 });
 
-/* ================= DATA STORAGE ================= */
-const rainbowFile = './rainbowData.json';
+/* ================= STORAGE ================= */
+const dataFile = './rainbowData.json';
+if (!fs.existsSync(dataFile)) fs.writeFileSync(dataFile, '{}');
 
-if (!fs.existsSync(rainbowFile)) {
-  fs.writeFileSync(rainbowFile, '{}');
+let rainbowData = JSON.parse(fs.readFileSync(dataFile));
+
+const saveData = () =>
+  fs.writeFileSync(dataFile, JSON.stringify(rainbowData, null, 2));
+
+/* ============================================================
+   🌈 ULTRA SMOOTH HSV RAINBOW
+============================================================ */
+
+function hsvToRgb(h, s, v) {
+  let r, g, b;
+  let i = Math.floor(h * 6);
+  let f = h * 6 - i;
+  let p = v * (1 - s);
+  let q = v * (1 - f * s);
+  let t = v * (1 - (1 - f) * s);
+
+  switch (i % 6) {
+    case 0: r = v; g = t; b = p; break;
+    case 1: r = q; g = v; b = p; break;
+    case 2: r = p; g = v; b = t; break;
+    case 3: r = p; g = q; b = v; break;
+    case 4: r = t; g = p; b = v; break;
+    case 5: r = v; g = p; b = q; break;
+  }
+
+  return [
+    Math.floor(r * 255),
+    Math.floor(g * 255),
+    Math.floor(b * 255)
+  ];
 }
 
-let rainbowData = JSON.parse(fs.readFileSync(rainbowFile));
-
-const saveData = () => {
-  fs.writeFileSync(rainbowFile, JSON.stringify(rainbowData, null, 2));
-};
-
-/* ================= ACTIVE INTERVALS ================= */
-const activeIntervals = {};
-
-/* ================= RAINBOW COLOR FUNCTION (FIXED) ================= */
-function getRainbowColor(step) {
-  const f = 0.3;
-
-  const r = Math.floor(Math.sin(f * step + 0) * 127 + 128);
-  const g = Math.floor(Math.sin(f * step + 2) * 127 + 128);
-  const b = Math.floor(Math.sin(f * step + 4) * 127 + 128);
-
-  // Return integer color (BEST for discord.js v14)
+function getSmoothRainbow(step) {
+  const hue = (step % 360) / 360;
+  const [r, g, b] = hsvToRgb(hue, 1, 1);
   return (r << 16) | (g << 8) | b;
 }
 
-/* ================= START RAINBOW ================= */
-function startRainbow(guildId, roleId, speed) {
-  let step = 0;
+/* ============================================================
+   ⚡ LOW API USAGE GLOBAL LOOP
+============================================================ */
 
-  // Clear previous interval if exists
-  if (activeIntervals[roleId]) {
-    clearInterval(activeIntervals[roleId]);
-  }
+let globalStep = 0;
 
-  activeIntervals[roleId] = setInterval(async () => {
-    try {
-      const guild = await client.guilds.fetch(guildId);
-      const role = await guild.roles.fetch(roleId);
+async function rainbowLoop() {
+  globalStep++;
 
-      if (!role || !role.editable) {
-        stopEffect(roleId);
-        return;
-      }
-
-      const color = getRainbowColor(step++);
-      await role.setColor(color);
-
-    } catch (error) {
-      console.error('🌈 Rainbow error:', error.message);
-      stopEffect(roleId);
-    }
-  }, Math.max(speed, 500));
-}
-
-/* ================= STOP EFFECT ================= */
-function stopEffect(roleId) {
-  if (activeIntervals[roleId]) {
-    clearInterval(activeIntervals[roleId]);
-    delete activeIntervals[roleId];
-  }
-}
-
-/* ================= READY ================= */
-client.once('ready', () => {
-  console.log(`✅ Logged in as ${client.user.tag}`);
-
-  // Restart saved rainbow roles
   for (const guildId in rainbowData) {
     for (const roleId in rainbowData[guildId]) {
-      const speed = rainbowData[guildId][roleId];
-      startRainbow(guildId, roleId, speed);
+
+      try {
+        const guild = await client.guilds.fetch(guildId);
+        const role = await guild.roles.fetch(roleId);
+        if (!role || !role.editable) continue;
+
+        const speed = rainbowData[guildId][roleId];
+        if (globalStep % Math.floor(speed / 100) !== 0) continue;
+
+        const color = getSmoothRainbow(globalStep);
+        await role.setColor(color);
+
+      } catch (err) {
+        console.log("Loop error:", err.message);
+      }
     }
   }
-});
-
-/* ================= SLASH COMMANDS ================= */
-if (CLIENT_ID && TOKEN) {
-  const commands = [
-    new SlashCommandBuilder()
-      .setName('rainbow-start')
-      .setDescription('Start rainbow effect')
-      .addRoleOption(option =>
-        option.setName('role')
-          .setDescription('Role to apply rainbow effect to')
-          .setRequired(true)
-      )
-      .addIntegerOption(option =>
-        option.setName('speed')
-          .setDescription('Speed in milliseconds (minimum 500)')
-          .setRequired(false)
-      ),
-
-    new SlashCommandBuilder()
-      .setName('rainbow-stop')
-      .setDescription('Stop rainbow effect')
-      .addRoleOption(option =>
-        option.setName('role')
-          .setDescription('Role to stop rainbow effect on')
-          .setRequired(true)
-      )
-  ].map(command => command.toJSON());
-
-  const rest = new REST({ version: '10' }).setToken(TOKEN);
-
-  (async () => {
-    try {
-      await rest.put(
-        Routes.applicationCommands(CLIENT_ID),
-        { body: commands }
-      );
-      console.log('✅ Slash commands registered');
-    } catch (err) {
-      console.error('❌ Failed to register slash commands:', err);
-    }
-  })();
 }
 
-/* ================= INTERACTION HANDLER ================= */
+// Single loop instead of multiple intervals
+setInterval(rainbowLoop, 100);
+
+/* ============================================================
+   🔥 SLASH COMMANDS
+============================================================ */
+
+const commands = [
+  new SlashCommandBuilder()
+    .setName('rainbow-start')
+    .setDescription('Start rainbow effect')
+    .addRoleOption(o =>
+      o.setName('role')
+        .setDescription('Role')
+        .setRequired(true))
+    .addIntegerOption(o =>
+      o.setName('speed')
+        .setDescription('Speed ms (min 500)')
+        .setRequired(false)),
+
+  new SlashCommandBuilder()
+    .setName('rainbow-stop')
+    .setDescription('Stop rainbow effect')
+    .addRoleOption(o =>
+      o.setName('role')
+        .setDescription('Role')
+        .setRequired(true))
+].map(c => c.toJSON());
+
+const rest = new REST({ version: '10' }).setToken(TOKEN);
+
+(async () => {
+  await rest.put(Routes.applicationCommands(CLIENT_ID), { body: commands });
+  console.log("Slash commands registered");
+})();
+
+/* ============================================================
+   🎮 INTERACTION HANDLER
+============================================================ */
+
 client.on('interactionCreate', async interaction => {
   if (!interaction.isChatInputCommand()) return;
 
   if (!interaction.member.permissions.has(PermissionsBitField.Flags.ManageRoles)) {
-    return interaction.reply({
-      content: '❌ You need Manage Roles permission.',
-      ephemeral: true
-    });
+    return interaction.reply({ content: "Need Manage Roles permission.", ephemeral: true });
   }
 
   const role = interaction.options.getRole('role');
-  const speed = interaction.options.getInteger('speed') || 1000;
+  const speed = Math.max(interaction.options.getInteger('speed') || 1000, 500);
 
   if (!role.editable) {
-    return interaction.reply({
-      content: '❌ I cannot edit this role. Make sure my role is above it.',
-      ephemeral: true
-    });
+    return interaction.reply({ content: "Role not editable.", ephemeral: true });
   }
 
-  /* ===== START ===== */
+  if (!rainbowData[interaction.guild.id])
+    rainbowData[interaction.guild.id] = {};
+
   if (interaction.commandName === 'rainbow-start') {
-
-    if (!rainbowData[interaction.guild.id]) {
-      rainbowData[interaction.guild.id] = {};
-    }
-
     rainbowData[interaction.guild.id][role.id] = speed;
     saveData();
-
-    startRainbow(interaction.guild.id, role.id, speed);
-
-    await interaction.reply(`🌈 Rainbow started on **${role.name}**`);
+    return interaction.reply(`🌈 Rainbow started on ${role.name}`);
   }
 
-  /* ===== STOP ===== */
   if (interaction.commandName === 'rainbow-stop') {
-
-    stopEffect(role.id);
-
-    if (rainbowData[interaction.guild.id]) {
-      delete rainbowData[interaction.guild.id][role.id];
-      saveData();
-    }
-
-    await interaction.reply(`🛑 Rainbow stopped on **${role.name}**`);
+    delete rainbowData[interaction.guild.id][role.id];
+    saveData();
+    return interaction.reply(`🛑 Rainbow stopped on ${role.name}`);
   }
 });
 
-/* ================= LOGIN ================= */
-if (TOKEN) {
-  client.login(TOKEN)
-    .then(() => console.log('✅ Bot logged in successfully'))
-    .catch(err => console.error('❌ Failed to login:', err));
-}
+/* ============================================================
+   💎 WEB DASHBOARD
+============================================================ */
+
+const app = express();
+app.use(express.json());
+
+app.get('/', (_, res) => {
+  res.send(`
+    <h1>🌈 Rainbow Dashboard</h1>
+    <pre>${JSON.stringify(rainbowData, null, 2)}</pre>
+  `);
+});
+
+app.post('/stop', (req, res) => {
+  const { guildId, roleId } = req.body;
+  if (rainbowData[guildId]) {
+    delete rainbowData[guildId][roleId];
+    saveData();
+  }
+  res.json({ success: true });
+});
+
+app.listen(PORT, () => {
+  console.log("Dashboard running on port", PORT);
+});
+
+/* ============================================================
+   LOGIN
+============================================================ */
+
+client.once('ready', () => {
+  console.log(`Logged in as ${client.user.tag}`);
+});
+
+client.login(TOKEN);
