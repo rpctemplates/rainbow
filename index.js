@@ -8,45 +8,40 @@ const {
   REST,
   PermissionsBitField
 } = require('discord.js');
-
 const fs = require('fs');
 const express = require('express');
 
-/* ================= EXPRESS (Railway uptime) ================= */
+/* ================= EXPRESS (uptime for Railway) ================= */
 const app = express();
 const PORT = process.env.PORT || 3000;
 
 app.get('/', (_, res) => res.send('🌈 Rainbow Bot is alive!'));
 app.listen(PORT, () => console.log(`Web server running on port ${PORT}`));
 
-/* ================= DISCORD CLIENT ================= */
-const client = new Client({
-  intents: [
-    GatewayIntentBits.Guilds,
-    GatewayIntentBits.GuildMembers // REQUIRED for role editing
-  ]
-});
-
-/* ================= TOKEN SAFETY ================= */
+/* ================= ENVIRONMENT VARIABLES ================= */
 const TOKEN = process.env.DISCORD_TOKEN;
 const CLIENT_ID = process.env.CLIENT_ID;
 
 if (!TOKEN) {
-  console.error('❌ DISCORD_TOKEN is missing');
+  console.error('❌ DISCORD_TOKEN is missing! Set it in Railway Variables.');
   process.exit(1);
 }
 if (!CLIENT_ID) {
-  console.error('❌ CLIENT_ID is missing');
+  console.error('❌ CLIENT_ID is missing! Set it in Railway Variables.');
   process.exit(1);
 }
+
+/* ================= DISCORD CLIENT ================= */
+const client = new Client({
+  intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMembers]
+});
 
 /* ================= DATA STORAGE ================= */
 const rainbowFile = './rainbowData.json';
 if (!fs.existsSync(rainbowFile)) fs.writeFileSync(rainbowFile, '{}');
 let rainbowData = JSON.parse(fs.readFileSync(rainbowFile));
 
-const saveData = () =>
-  fs.writeFileSync(rainbowFile, JSON.stringify(rainbowData, null, 2));
+const saveData = () => fs.writeFileSync(rainbowFile, JSON.stringify(rainbowData, null, 2));
 
 /* ================= PRESETS ================= */
 const presets = {
@@ -137,9 +132,18 @@ const commands = [
 const rest = new REST({ version: '10' }).setToken(TOKEN);
 
 (async () => {
-  await rest.put(Routes.applicationCommands(CLIENT_ID), { body: commands });
-  console.log('✅ Slash commands registered');
+  try {
+    await rest.put(Routes.applicationCommands(CLIENT_ID), { body: commands });
+    console.log('✅ Slash commands registered');
+  } catch (err) {
+    console.error('❌ Failed to register slash commands:', err);
+  }
 })();
 
 /* ================= LOGIN ================= */
-client.login(TOKEN);
+client.login(TOKEN)
+  .then(() => console.log('✅ Bot logged in successfully'))
+  .catch(err => {
+    console.error('❌ Failed to login:', err);
+    process.exit(1);
+  });
