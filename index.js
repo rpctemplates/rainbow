@@ -23,12 +23,10 @@ const TOKEN = process.env.DISCORD_TOKEN;
 const CLIENT_ID = process.env.CLIENT_ID;
 
 if (!TOKEN) {
-  console.error('❌ DISCORD_TOKEN is missing! Set it in Railway Variables.');
-  process.exit(1);
+  console.warn('⚠️ DISCORD_TOKEN is missing! The bot will not login.');
 }
 if (!CLIENT_ID) {
-  console.error('❌ CLIENT_ID is missing! Set it in Railway Variables.');
-  process.exit(1);
+  console.warn('⚠️ CLIENT_ID is missing! Slash commands will not register.');
 }
 
 /* ================= DISCORD CLIENT ================= */
@@ -109,41 +107,44 @@ const stopEffect = (id) => {
 
 /* ================= READY ================= */
 client.once('ready', () => {
-  console.log(`✅ Logged in as ${client.user.tag}`);
+  console.log(`✅ Logged in as ${client.user?.tag || '[NO LOGIN]'}`);
   for (const g in rainbowData)
     for (const r in rainbowData[g])
       startRainbow(g, r, rainbowData[g][r]);
 });
 
 /* ================= SLASH COMMANDS ================= */
-const commands = [
-  new SlashCommandBuilder()
-    .setName('rainbow-start')
-    .setDescription('Start rainbow effect')
-    .addRoleOption(o => o.setName('role').setRequired(true))
-    .addIntegerOption(o => o.setName('speed')),
+if (CLIENT_ID && TOKEN) {
+  const commands = [
+    new SlashCommandBuilder()
+      .setName('rainbow-start')
+      .setDescription('Start rainbow effect')
+      .addRoleOption(o => o.setName('role').setRequired(true))
+      .addIntegerOption(o => o.setName('speed')),
 
-  new SlashCommandBuilder()
-    .setName('rainbow-stop')
-    .setDescription('Stop rainbow')
-    .addRoleOption(o => o.setName('role').setRequired(true))
-].map(c => c.toJSON());
+    new SlashCommandBuilder()
+      .setName('rainbow-stop')
+      .setDescription('Stop rainbow')
+      .addRoleOption(o => o.setName('role').setRequired(true))
+  ].map(c => c.toJSON());
 
-const rest = new REST({ version: '10' }).setToken(TOKEN);
+  const rest = new REST({ version: '10' }).setToken(TOKEN);
 
-(async () => {
-  try {
-    await rest.put(Routes.applicationCommands(CLIENT_ID), { body: commands });
-    console.log('✅ Slash commands registered');
-  } catch (err) {
-    console.error('❌ Failed to register slash commands:', err);
-  }
-})();
+  (async () => {
+    try {
+      await rest.put(Routes.applicationCommands(CLIENT_ID), { body: commands });
+      console.log('✅ Slash commands registered');
+    } catch (err) {
+      console.error('❌ Failed to register slash commands:', err);
+    }
+  })();
+}
 
 /* ================= LOGIN ================= */
-client.login(TOKEN)
-  .then(() => console.log('✅ Bot logged in successfully'))
-  .catch(err => {
-    console.error('❌ Failed to login:', err);
-    process.exit(1);
-  });
+if (TOKEN) {
+  client.login(TOKEN)
+    .then(() => console.log('✅ Bot logged in successfully'))
+    .catch(err => console.error('❌ Failed to login:', err));
+} else {
+  console.warn('⚠️ Skipping bot login due to missing DISCORD_TOKEN');
+}
