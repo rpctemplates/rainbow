@@ -31,6 +31,7 @@ const dataFile = './rainbowData.json';
 if (!fs.existsSync(dataFile)) fs.writeFileSync(dataFile, '{}');
 
 let rainbowData = JSON.parse(fs.readFileSync(dataFile));
+const activeRoles = new Map(); // live roles for dashboard preview
 
 const saveData = () =>
   fs.writeFileSync(dataFile, JSON.stringify(rainbowData, null, 2));
@@ -80,7 +81,6 @@ async function rainbowLoop() {
 
   for (const guildId in rainbowData) {
     for (const roleId in rainbowData[guildId]) {
-
       try {
         const guild = await client.guilds.fetch(guildId);
         const role = await guild.roles.fetch(roleId);
@@ -92,6 +92,9 @@ async function rainbowLoop() {
         const color = getSmoothRainbow(globalStep);
         await role.setColor(color);
 
+        // update activeRoles for dashboard preview
+        activeRoles.set(roleId, { guildId, speed, step: globalStep, lastColor: color });
+
       } catch (err) {
         console.log("Loop error:", err.message);
       }
@@ -99,7 +102,7 @@ async function rainbowLoop() {
   }
 }
 
-// Single loop instead of multiple intervals
+// Single loop interval
 setInterval(rainbowLoop, 100);
 
 /* ============================================================
@@ -159,11 +162,13 @@ client.on('interactionCreate', async interaction => {
   if (interaction.commandName === 'rainbow-start') {
     rainbowData[interaction.guild.id][role.id] = speed;
     saveData();
+    activeRoles.set(role.id, { guildId: interaction.guild.id, speed, step: 0, lastColor: null });
     return interaction.reply(`🌈 Rainbow started on ${role.name}`);
   }
 
   if (interaction.commandName === 'rainbow-stop') {
     delete rainbowData[interaction.guild.id][role.id];
+    activeRoles.delete(role.id);
     saveData();
     return interaction.reply(`🛑 Rainbow stopped on ${role.name}`);
   }
@@ -176,151 +181,136 @@ client.on('interactionCreate', async interaction => {
 const app = express();
 app.use(express.json());
 
-app.get('/', (_, res) => {
+app.get('/', async (_, res) => {
   res.send(`
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-  <title>🌈 Rainbow Dashboard</title>
-  <style>
-    body { font-family: Arial,sans-serif; background:#0f172a; color:white; padding:30px; }
-    h1 { text-align:center; margin-bottom:30px; }
-    .card { background:#1e293b; padding:20px; border-radius:12px; margin-bottom:20px; box-shadow:0 0 20px rgba(0,0,0,0.4); }
-    button { background:#10b981; border:none; padding:6px 12px; border-radius:6px; color:white; cursor:pointer; font-weight:bold; }
-    button.stop { background:#ef4444; }
-    button:hover { opacity:0.9; }
-    .guild-title { font-size:20px; margin-bottom:10px; color:#38bdf8; }
-    .role-row { display:flex; align-items:center; justify-content:space-between; margin:6px 0; padding:6px; background:#334155; border-radius:6px; }
-    .color-box { width:30px; height:20px; border-radius:4px; display:inline-block; margin-left:10px; }
-    input[type="number"] { width:70px; padding:4px; border-radius:4px; border:none; margin-left:5px; }
-  </style>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>🌈 Rainbow Dashboard</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap');
+
+  body { font-family: 'Inter', sans-serif; background: #0f172a; color: #f1f5f9; margin:0; padding:0; }
+  header { text-align:center; padding:40px 20px; background: linear-gradient(90deg, #fbbf24, #10b981, #3b82f6); color: #0f172a; font-size:2rem; font-weight:700; letter-spacing:1px; }
+  main { max-width:1200px; margin:30px auto; padding:0 20px; display:grid; grid-template-columns: repeat(auto-fill,minmax(320px,1fr)); gap:20px; }
+  .guild-card { background:#1e293b; border-radius:12px; padding:20px; box-shadow:0 8px 20px rgba(0,0,0,0.5); display:flex; flex-direction:column; }
+  .guild-title { font-size:1.2rem; font-weight:600; margin-bottom:15px; color:#38bdf8; word-break:break-word; }
+  .role-row { display:flex; align-items:center; justify-content:space-between; background:#334155; margin-bottom:10px; padding:10px 12px; border-radius:8px; transition: background 0.2s ease; }
+  .role-row:hover { background:#475569; }
+  .role-info { display:flex; align-items:center; gap:10px; }
+  .color-box { width:30px; height:20px; border-radius:4px; border:1px solid #0f172a; }
+  input[type="number"] { width:80px; padding:4px 6px; border-radius:6px; border:none; font-weight:600; }
+  button { border:none; border-radius:6px; padding:6px 14px; font-weight:600; cursor:pointer; transition:opacity 0.2s ease; }
+  button.start { background:#10b981; color:white; }
+  button.stop { background:#ef4444; color:white; }
+  button:hover { opacity:0.85; }
+  @media (max-width:640px){ main{ grid-template-columns: 1fr; } }
+</style>
 </head>
 <body>
-
-<h1>🌈 Rainbow Role Dashboard</h1>
-
-<div id="content"></div>
-
+<header>🌈 Rainbow Role Dashboard</header>
+<main id="dashboard">Loading...</main>
 <script>
-async function loadData() {
+async function fetchData() {
   const res = await fetch('/api/data');
   const data = await res.json();
-
-  const container = document.getElementById('content');
+  const container = document.getElementById('dashboard');
   container.innerHTML = '';
-
-  if (Object.keys(data).length === 0) {
-    container.innerHTML = "<p>No active rainbow roles.</p>";
-    return;
-  }
+  if (!Object.keys(data).length) { container.innerHTML = '<p style="text-align:center; width:100%;">No active rainbow roles.</p>'; return; }
 
   for (const guildId in data) {
-    const card = document.createElement('div');
-    card.className = 'card';
-    card.innerHTML += '<div class="guild-title">Guild ID: ' + guildId + '</div>';
+    const card = document.createElement('div'); card.className='guild-card';
+    const title = document.createElement('div'); title.className='guild-title'; title.textContent='Guild ID: '+guildId;
+    card.appendChild(title);
 
     for (const roleId in data[guildId]) {
-      const speed = data[guildId][roleId];
-
-      const row = document.createElement('div');
-      row.className = 'role-row';
+      const row = document.createElement('div'); row.className='role-row';
       row.innerHTML = \`
-        <span>
-          Role ID: \${roleId} 
-          <input type="number" min="500" value="\${speed}" id="speed-\${guildId}-\${roleId}">ms
+        <div class="role-info">
+          <div id="name-\${guildId}-\${roleId}">Role ID: \${roleId}</div>
+          <input type="number" min="500" value="\${data[guildId][roleId]}" id="speed-\${guildId}-\${roleId}"> ms
           <div class="color-box" id="color-\${guildId}-\${roleId}"></div>
-        </span>
-        <span>
-          <button onclick="startRole('\${guildId}','\${roleId}')" >Start</button>
+        </div>
+        <div>
+          <button class="start" onclick="startRole('\${guildId}','\${roleId}')">Start</button>
           <button class="stop" onclick="stopRole('\${guildId}','\${roleId}')">Stop</button>
-        </span>
+        </div>
       \`;
-
       card.appendChild(row);
-    }
 
+      fetch('/api/roleName?guildId=' + guildId + '&roleId=' + roleId)
+        .then(r => r.json()).then(j => {
+          const nameEl = document.getElementById('name-' + guildId + '-' + roleId);
+          if (j.name) nameEl.textContent = j.name;
+        });
+    }
     container.appendChild(card);
   }
 }
 
-// Start a rainbow role
 async function startRole(guildId, roleId) {
-  const speedInput = document.getElementById(\`speed-\${guildId}-\${roleId}\`);
-  const speed = Math.max(parseInt(speedInput.value)||1000, 500);
-
-  await fetch('/api/start', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ guildId, roleId, speed })
-  });
-
-  loadData();
+  const speed = parseInt(document.getElementById(\`speed-\${guildId}-\${roleId}\`).value)||1000;
+  await fetch('/api/start',{ method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({guildId,roleId,speed}) });
+  fetchData();
 }
 
-// Stop a rainbow role
 async function stopRole(guildId, roleId) {
-  await fetch('/api/stop', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ guildId, roleId })
-  });
-
-  loadData();
+  await fetch('/api/stop',{ method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({guildId,roleId}) });
+  fetchData();
 }
 
-// Update color previews
 async function updateColors() {
   const res = await fetch('/api/activeColors');
   const data = await res.json();
-  for (const guildId in data) {
-    for (const roleId in data[guildId]) {
-      const colorBox = document.getElementById(\`color-\${guildId}-\${roleId}\`);
-      if (colorBox) colorBox.style.background = '#' + data[guildId][roleId].toString(16).padStart(6,'0');
+  for(const guildId in data){
+    for(const roleId in data[guildId]){
+      const box=document.getElementById(\`color-\${guildId}-\${roleId}\`);
+      if(box) box.style.background='#'+data[guildId][roleId].toString(16).padStart(6,'0');
     }
   }
 }
 
-setInterval(() => { loadData(); updateColors(); }, 3000);
-loadData();
-updateColors();
+setInterval(()=>{fetchData();updateColors();},3000);
+fetchData();updateColors();
 </script>
-
 </body>
 </html>
   `);
 });
 
-/* ========= PUBLIC API ========= */
+// API for live role names
+app.get('/api/roleName', async (req, res) => {
+  try {
+    const guild = await client.guilds.fetch(req.query.guildId);
+    const role = await guild.roles.fetch(req.query.roleId);
+    res.json({ name: role ? role.name : null });
+  } catch {
+    res.json({ name: null });
+  }
+});
 
+/* ========= PUBLIC API ========= */
 app.get('/api/data', (_, res) => res.json(rainbowData));
 
-// Start rainbow role
 app.post('/api/start', (req, res) => {
   const { guildId, roleId, speed } = req.body;
-
   if (!rainbowData[guildId]) rainbowData[guildId] = {};
   rainbowData[guildId][roleId] = speed;
   saveData();
-
   activeRoles.set(roleId, { guildId, speed, step: 0, lastColor: null });
-
   res.json({ success: true });
 });
 
-// Stop rainbow role
 app.post('/api/stop', (req, res) => {
   const { guildId, roleId } = req.body;
-
-  if (rainbowData[guildId]) {
-    delete rainbowData[guildId][roleId];
-    activeRoles.delete(roleId);
-    saveData();
-  }
-
+  if (rainbowData[guildId]) delete rainbowData[guildId][roleId];
+  activeRoles.delete(roleId);
+  saveData();
   res.json({ success: true });
 });
 
-// Provide live color preview
 app.get('/api/activeColors', (_, res) => {
   const colors = {};
   activeRoles.forEach((data, roleId) => {
@@ -330,7 +320,7 @@ app.get('/api/activeColors', (_, res) => {
   res.json(colors);
 });
 
-app.listen(PORT, () => console.log("🌐 Fully public rainbow dashboard running on port", PORT));
+app.listen(PORT, () => console.log("🌐 Rainbow dashboard running on port", PORT));
 
 /* ============================================================
    LOGIN
