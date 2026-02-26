@@ -170,7 +170,7 @@ client.on('interactionCreate', async interaction => {
 });
 
 /* ============================================================
-   💎 WEB DASHBOARD
+   🌐 PUBLIC ADVANCED DASHBOARD
 ============================================================ */
 
 const app = express();
@@ -178,22 +178,145 @@ app.use(express.json());
 
 app.get('/', (_, res) => {
   res.send(`
-    <h1>🌈 Rainbow Dashboard</h1>
-    <pre>${JSON.stringify(rainbowData, null, 2)}</pre>
+<!DOCTYPE html>
+<html>
+<head>
+  <title>🌈 Rainbow Dashboard</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      background: #0f172a;
+      color: white;
+      padding: 30px;
+    }
+
+    h1 {
+      text-align: center;
+      margin-bottom: 30px;
+    }
+
+    .card {
+      background: #1e293b;
+      padding: 20px;
+      border-radius: 12px;
+      margin-bottom: 20px;
+      box-shadow: 0 0 20px rgba(0,0,0,0.4);
+    }
+
+    button {
+      background: #ef4444;
+      border: none;
+      padding: 8px 14px;
+      border-radius: 8px;
+      color: white;
+      cursor: pointer;
+      font-weight: bold;
+    }
+
+    button:hover {
+      background: #dc2626;
+    }
+
+    .guild-title {
+      font-size: 20px;
+      margin-bottom: 10px;
+      color: #38bdf8;
+    }
+
+    .role-row {
+      display: flex;
+      justify-content: space-between;
+      margin: 6px 0;
+      padding: 6px;
+      background: #334155;
+      border-radius: 6px;
+    }
+  </style>
+</head>
+<body>
+
+<h1>🌈 Rainbow Role Dashboard</h1>
+
+<div id="content"></div>
+
+<script>
+async function loadData() {
+  const res = await fetch('/api/data');
+  const data = await res.json();
+
+  const container = document.getElementById('content');
+  container.innerHTML = '';
+
+  if (Object.keys(data).length === 0) {
+    container.innerHTML = "<p>No active rainbow roles.</p>";
+    return;
+  }
+
+  for (const guildId in data) {
+    const card = document.createElement('div');
+    card.className = 'card';
+
+    card.innerHTML += '<div class="guild-title">Guild ID: ' + guildId + '</div>';
+
+    for (const roleId in data[guildId]) {
+      const speed = data[guildId][roleId];
+
+      const row = document.createElement('div');
+      row.className = 'role-row';
+
+      row.innerHTML = \`
+        <span>Role ID: \${roleId} (Speed: \${speed}ms)</span>
+        <button onclick="stopRole('\${guildId}','\${roleId}')">Stop</button>
+      \`;
+
+      card.appendChild(row);
+    }
+
+    container.appendChild(card);
+  }
+}
+
+async function stopRole(guildId, roleId) {
+  await fetch('/api/stop', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ guildId, roleId })
+  });
+
+  loadData();
+}
+
+// Auto-refresh every 5 seconds
+setInterval(loadData, 5000);
+loadData();
+</script>
+
+</body>
+</html>
   `);
 });
 
-app.post('/stop', (req, res) => {
+/* ========= API ========= */
+
+// Public API: anyone can access
+app.get('/api/data', (_, res) => {
+  res.json(rainbowData);
+});
+
+app.post('/api/stop', (req, res) => {
   const { guildId, roleId } = req.body;
+
   if (rainbowData[guildId]) {
     delete rainbowData[guildId][roleId];
+    activeRoles.delete(roleId);
     saveData();
   }
+
   res.json({ success: true });
 });
 
 app.listen(PORT, () => {
-  console.log("Dashboard running on port", PORT);
+  console.log("🌐 Public dashboard running on port", PORT);
 });
 
 /* ============================================================
