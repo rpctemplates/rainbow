@@ -30,7 +30,6 @@ if (!CLIENT_ID) console.warn('⚠️ CLIENT_ID is missing!');
 const client = new Client({
   intents: [GatewayIntentBits.Guilds]
 });
-
 /* ================= DATA STORAGE ================= */
 const rainbowFile = './rainbowData.json';
 if (!fs.existsSync(rainbowFile)) fs.writeFileSync(rainbowFile, '{}');
