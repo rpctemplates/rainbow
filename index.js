@@ -27,24 +27,21 @@ const client = new Client({ intents: [GatewayIntentBits.Guilds] });
 const DATA_FILE = './rainbowData.json';
 if (!fs.existsSync(DATA_FILE)) fs.writeFileSync(DATA_FILE, '{}');
 
-// Load rainbowData as Map<guildId, Map<roleId, speed>>
-const rainbowData = new Map();
-const rawData = JSON.parse(fs.readFileSync(DATA_FILE));
-for (const guildId in rawData) {
-  const roles = new Map();
-  for (const roleId in rawData[guildId]) roles.set(roleId, rawData[guildId][roleId]);
-  rainbowData.set(guildId, roles);
-}
-
-// Active roles and known roles as Map<guildId, Map<roleId, data>>
-const activeRoles = new Map();
+const rainbowRoles = new Map(); // roleId => { speed, hueOffset, interval, lastColor }
 const knownRoles = new Map();
+
+// Load saved data
+const rawData = JSON.parse(fs.readFileSync(DATA_FILE));
+for (const roleId in rawData) {
+  const { speed = 1000, hueOffset = 0 } = rawData[roleId];
+  rainbowRoles.set(roleId, { speed, hueOffset, interval: null, lastColor: 0 });
+  knownRoles.set(roleId, { name: rawData[roleId].name || 'Role', lastSpeed: speed });
+}
 
 const saveData = () => {
   const obj = {};
-  rainbowData.forEach((roles, guildId) => {
-    obj[guildId] = {};
-    roles.forEach((speed, roleId) => (obj[guildId][roleId] = speed));
+  rainbowRoles.forEach((data, roleId) => {
+    obj[roleId] = { name: knownRoles.get(roleId)?.name || 'Role', speed: data.speed, hueOffset: data.hueOffset };
   });
   fs.writeFileSync(DATA_FILE, JSON.stringify(obj, null, 2));
 };
@@ -67,44 +64,38 @@ const hsvToRgb = (h, s, v) => {
     case 5: r = v; g = p; b = q; break;
   }
 
-  return [Math.floor(r * 255), Math.floor(g * 255), Math.floor(b * 255)];
+  return (Math.floor(r * 255) << 16) | (Math.floor(g * 255) << 8) | Math.floor(b * 255);
 };
 
-const getSmoothRainbow = (step) => {
-  const hue = (step % 360) / 360;
-  const [r, g, b] = hsvToRgb(hue, 1, 1);
-  return (r << 16) | (g << 8) | b;
-};
+/* ================= ROLE COLOR LOOP ================= */
+const startRainbowRole = (guild, roleId) => {
+  const roleData = rainbowRoles.get(roleId);
+  if (!roleData || roleData.interval) return;
 
-/* ================= GLOBAL LOOP ================= */
-let globalStep = 0;
-setInterval(async () => {
-  globalStep++;
+  let step = roleData.hueOffset;
 
-  rainbowData.forEach((roles, guildId) => {
-    const guild = client.guilds.cache.get(guildId);
-    if (!guild) return;
+  roleData.interval = setInterval(async () => {
+    const role = guild.roles.cache.get(roleId);
+    if (!role || !role.editable) return;
 
-    roles.forEach(async (speed, roleId) => {
-      const role = guild.roles.cache.get(roleId);
-      if (!role || !role.editable) return;
-
-      const interval = Math.max(Math.floor(speed / 200), 1);
-      if (globalStep % interval !== 0) return;
-
-      const color = getSmoothRainbow(globalStep);
-      if (role.color === color) return;
-
+    const color = hsvToRgb((step % 360) / 360, 1, 1);
+    if (role.color !== color) {
       try {
         await role.setColor(color);
-        if (!activeRoles.has(guildId)) activeRoles.set(guildId, new Map());
-        activeRoles.get(guildId).set(roleId, { speed, step: globalStep, lastColor: color });
+        roleData.lastColor = color;
       } catch {
-        console.warn(`Failed to update role ${role.name} in ${guild.name}`);
+        // ignore rate limit / API errors
       }
-    });
-  });
-}, 200);
+    }
+    step++;
+  }, Math.max(roleData.speed / 360, 50)); // Spread full hue over speed, min 50ms tick
+};
+
+const stopRainbowRole = (roleId) => {
+  const roleData = rainbowRoles.get(roleId);
+  if (roleData?.interval) clearInterval(roleData.interval);
+  if (roleData) roleData.interval = null;
+};
 
 /* ================= SLASH COMMANDS ================= */
 const commands = [
@@ -112,7 +103,8 @@ const commands = [
     .setName('rainbow-start')
     .setDescription('Start rainbow effect on a role')
     .addRoleOption((o) => o.setName('role').setDescription('Target role').setRequired(true))
-    .addIntegerOption((o) => o.setName('speed').setDescription('Speed in ms (min 500)').setRequired(false)),
+    .addIntegerOption((o) => o.setName('speed').setDescription('Speed in ms (min 50)').setRequired(false))
+    .addIntegerOption((o) => o.setName('hueOffset').setDescription('Hue offset (0–360)').setRequired(false)),
 
   new SlashCommandBuilder()
     .setName('rainbow-stop')
@@ -130,32 +122,31 @@ const rest = new REST({ version: '10' }).setToken(TOKEN);
   }
 })();
 
-/* ================= INTERACTION HANDLER ================= */
+/* ================= INTERACTIONS ================= */
 client.on('interactionCreate', async (interaction) => {
   if (!interaction.isChatInputCommand()) return;
-
   if (!interaction.member.permissions.has(PermissionsBitField.Flags.ManageRoles)) {
     return interaction.reply({ content: '❌ Need Manage Roles permission.', ephemeral: true });
   }
 
   const role = interaction.options.getRole('role');
-  const speed = Math.max(interaction.options.getInteger('speed') || 1000, 500);
-
   if (!role.editable) return interaction.reply({ content: '❌ Role not editable.', ephemeral: true });
 
-  if (!rainbowData.has(interaction.guild.id)) rainbowData.set(interaction.guild.id, new Map());
-  if (!knownRoles.has(interaction.guild.id)) knownRoles.set(interaction.guild.id, new Map());
-
-  knownRoles.get(interaction.guild.id).set(role.id, { name: role.name, lastSpeed: speed });
-
   if (interaction.commandName === 'rainbow-start') {
-    rainbowData.get(interaction.guild.id).set(role.id, speed);
+    const speed = Math.max(interaction.options.getInteger('speed') || 1000, 50);
+    const hueOffset = interaction.options.getInteger('hueOffset') || 0;
+
+    rainbowRoles.set(role.id, { speed, hueOffset, interval: null, lastColor: 0 });
+    knownRoles.set(role.id, { name: role.name, lastSpeed: speed });
+
+    startRainbowRole(interaction.guild, role.id);
     saveData();
     return interaction.reply(`🌈 Rainbow started on ${role.name}`);
   }
 
   if (interaction.commandName === 'rainbow-stop') {
-    rainbowData.get(interaction.guild.id).delete(role.id);
+    stopRainbowRole(role.id);
+    rainbowRoles.delete(role.id);
     saveData();
     return interaction.reply(`🛑 Rainbow stopped on ${role.name}`);
   }
@@ -165,44 +156,22 @@ client.on('interactionCreate', async (interaction) => {
 const app = express();
 app.use(express.json());
 
-app.get('/api/data', (_, res) => {
-  const data = {};
-  knownRoles.forEach((roles, guildId) => {
-    data[guildId] = {};
-    roles.forEach((info, roleId) => {
-      const speed = rainbowData.get(guildId)?.get(roleId) || info.lastSpeed || 0;
-      data[guildId][roleId] = speed;
-    });
-  });
-  res.json(data);
-});
-
-app.post('/api/start', (req, res) => {
-  const { guildId, roleId, speed } = req.body;
-  if (!rainbowData.has(guildId)) rainbowData.set(guildId, new Map());
-  rainbowData.get(guildId).set(roleId, Math.max(speed || 1000, 500));
-  saveData();
-  res.json({ success: true });
-});
-
-app.post('/api/stop', (req, res) => {
-  const { guildId, roleId } = req.body;
-  rainbowData.get(guildId)?.delete(roleId);
-  saveData();
-  res.json({ success: true });
-});
-
 app.get('/api/activeColors', (_, res) => {
-  const data = {};
-  activeRoles.forEach((roles, guildId) => {
-    data[guildId] = {};
-    roles.forEach((info, roleId) => (data[guildId][roleId] = info.lastColor || 0));
-  });
-  res.json(data);
+  const colors = {};
+  rainbowRoles.forEach((data, roleId) => (colors[roleId] = data.lastColor || 0));
+  res.json(colors);
 });
 
 app.listen(PORT, () => console.log(`🌐 Rainbow dashboard running on port ${PORT}`));
 
 /* ================= LOGIN ================= */
-client.once('ready', () => console.log(`🤖 Logged in as ${client.user.tag}`));
+client.once('ready', () => {
+  console.log(`🤖 Logged in as ${client.user.tag}`);
+  const guild = client.guilds.cache.first();
+  if (!guild) return;
+
+  // Start all saved rainbow roles automatically
+  rainbowRoles.forEach((_, roleId) => startRainbowRole(guild, roleId));
+});
+
 client.login(TOKEN);
