@@ -1,16 +1,14 @@
 require('dotenv').config();
-
+const fs = require('fs');
+const express = require('express');
 const {
   Client,
   GatewayIntentBits,
   SlashCommandBuilder,
   Routes,
   REST,
-  PermissionsBitField
+  PermissionsBitField,
 } = require('discord.js');
-
-const express = require('express');
-const fs = require('fs');
 
 /* ================= ENV ================= */
 const TOKEN = process.env.DISCORD_TOKEN;
@@ -18,36 +16,47 @@ const CLIENT_ID = process.env.CLIENT_ID;
 const PORT = process.env.PORT || 3000;
 
 if (!TOKEN || !CLIENT_ID) {
-  console.log("Missing TOKEN or CLIENT_ID");
+  console.error('❌ Missing DISCORD_TOKEN or CLIENT_ID');
+  process.exit(1);
 }
 
 /* ================= DISCORD CLIENT ================= */
-const client = new Client({
-  intents: [GatewayIntentBits.Guilds]
-});
+const client = new Client({ intents: [GatewayIntentBits.Guilds] });
 
 /* ================= STORAGE ================= */
-const dataFile = './rainbowData.json';
-if (!fs.existsSync(dataFile)) fs.writeFileSync(dataFile, '{}');
+const DATA_FILE = './rainbowData.json';
+if (!fs.existsSync(DATA_FILE)) fs.writeFileSync(DATA_FILE, '{}');
 
-let rainbowData = JSON.parse(fs.readFileSync(dataFile));
-const activeRoles = new Map(); // live roles for dashboard preview
-const knownRoles = {}; // store all roles we've seen
+// Load rainbowData as Map<guildId, Map<roleId, speed>>
+const rainbowData = new Map();
+const rawData = JSON.parse(fs.readFileSync(DATA_FILE));
+for (const guildId in rawData) {
+  const roles = new Map();
+  for (const roleId in rawData[guildId]) roles.set(roleId, rawData[guildId][roleId]);
+  rainbowData.set(guildId, roles);
+}
 
-const saveData = () =>
-  fs.writeFileSync(dataFile, JSON.stringify(rainbowData, null, 2));
+// Active roles and known roles as Map<guildId, Map<roleId, data>>
+const activeRoles = new Map();
+const knownRoles = new Map();
 
-/* ============================================================
-   🌈 ULTRA SMOOTH HSV RAINBOW
-============================================================ */
+const saveData = () => {
+  const obj = {};
+  rainbowData.forEach((roles, guildId) => {
+    obj[guildId] = {};
+    roles.forEach((speed, roleId) => (obj[guildId][roleId] = speed));
+  });
+  fs.writeFileSync(DATA_FILE, JSON.stringify(obj, null, 2));
+};
 
-function hsvToRgb(h, s, v) {
+/* ================= COLOR UTILITIES ================= */
+const hsvToRgb = (h, s, v) => {
   let r, g, b;
-  let i = Math.floor(h * 6);
-  let f = h * 6 - i;
-  let p = v * (1 - s);
-  let q = v * (1 - f * s);
-  let t = v * (1 - (1 - f) * s);
+  const i = Math.floor(h * 6);
+  const f = h * 6 - i;
+  const p = v * (1 - s);
+  const q = v * (1 - f * s);
+  const t = v * (1 - (1 - f) * s);
 
   switch (i % 6) {
     case 0: r = v; g = t; b = p; break;
@@ -58,184 +67,142 @@ function hsvToRgb(h, s, v) {
     case 5: r = v; g = p; b = q; break;
   }
 
-  return [
-    Math.floor(r * 255),
-    Math.floor(g * 255),
-    Math.floor(b * 255)
-  ];
-}
+  return [Math.floor(r * 255), Math.floor(g * 255), Math.floor(b * 255)];
+};
 
-function getSmoothRainbow(step) {
+const getSmoothRainbow = (step) => {
   const hue = (step % 360) / 360;
   const [r, g, b] = hsvToRgb(hue, 1, 1);
   return (r << 16) | (g << 8) | b;
-}
+};
 
-/* ============================================================
-   ⚡ OPTIMIZED GLOBAL LOOP (NO FETCH SPAM)
-============================================================ */
-
+/* ================= GLOBAL LOOP ================= */
 let globalStep = 0;
-
-setInterval(() => {
+setInterval(async () => {
   globalStep++;
 
-  for (const guildId in rainbowData) {
+  rainbowData.forEach((roles, guildId) => {
     const guild = client.guilds.cache.get(guildId);
-    if (!guild) continue;
+    if (!guild) return;
 
-    for (const roleId in rainbowData[guildId]) {
+    roles.forEach(async (speed, roleId) => {
       const role = guild.roles.cache.get(roleId);
-      if (!role || !role.editable) continue;
+      if (!role || !role.editable) return;
 
-      const speed = Math.max(rainbowData[guildId][roleId], 500);
       const interval = Math.max(Math.floor(speed / 200), 1);
-
-      if (globalStep % interval !== 0) continue;
+      if (globalStep % interval !== 0) return;
 
       const color = getSmoothRainbow(globalStep);
+      if (role.color === color) return;
 
-      if (role.color === color) continue;
-
-      role.setColor(color).catch(() => {});
-
-      activeRoles.set(roleId, {
-        guildId,
-        speed,
-        step: globalStep,
-        lastColor: color
-      });
-    }
-  }
+      try {
+        await role.setColor(color);
+        if (!activeRoles.has(guildId)) activeRoles.set(guildId, new Map());
+        activeRoles.get(guildId).set(roleId, { speed, step: globalStep, lastColor: color });
+      } catch {
+        console.warn(`Failed to update role ${role.name} in ${guild.name}`);
+      }
+    });
+  });
 }, 200);
 
-/* ============================================================
-   🔥 SLASH COMMANDS
-============================================================ */
-
+/* ================= SLASH COMMANDS ================= */
 const commands = [
   new SlashCommandBuilder()
     .setName('rainbow-start')
-    .setDescription('Start rainbow effect')
-    .addRoleOption(o =>
-      o.setName('role')
-        .setDescription('Role')
-        .setRequired(true))
-    .addIntegerOption(o =>
-      o.setName('speed')
-        .setDescription('Speed ms (min 500)')
-        .setRequired(false)),
+    .setDescription('Start rainbow effect on a role')
+    .addRoleOption((o) => o.setName('role').setDescription('Target role').setRequired(true))
+    .addIntegerOption((o) => o.setName('speed').setDescription('Speed in ms (min 500)').setRequired(false)),
 
   new SlashCommandBuilder()
     .setName('rainbow-stop')
-    .setDescription('Stop rainbow effect')
-    .addRoleOption(o =>
-      o.setName('role')
-        .setDescription('Role')
-        .setRequired(true))
-].map(c => c.toJSON());
+    .setDescription('Stop rainbow effect on a role')
+    .addRoleOption((o) => o.setName('role').setDescription('Target role').setRequired(true)),
+].map((c) => c.toJSON());
 
 const rest = new REST({ version: '10' }).setToken(TOKEN);
-
 (async () => {
-  await rest.put(Routes.applicationCommands(CLIENT_ID), { body: commands });
-  console.log("Slash commands registered");
+  try {
+    await rest.put(Routes.applicationCommands(CLIENT_ID), { body: commands });
+    console.log('✅ Slash commands registered');
+  } catch (err) {
+    console.error('Failed to register slash commands:', err);
+  }
 })();
 
-/* ============================================================
-   🎮 INTERACTION HANDLER
-============================================================ */
-
-client.on('interactionCreate', async interaction => {
+/* ================= INTERACTION HANDLER ================= */
+client.on('interactionCreate', async (interaction) => {
   if (!interaction.isChatInputCommand()) return;
 
   if (!interaction.member.permissions.has(PermissionsBitField.Flags.ManageRoles)) {
-    return interaction.reply({ content: "Need Manage Roles permission.", ephemeral: true });
+    return interaction.reply({ content: '❌ Need Manage Roles permission.', ephemeral: true });
   }
 
   const role = interaction.options.getRole('role');
   const speed = Math.max(interaction.options.getInteger('speed') || 1000, 500);
 
-  if (!role.editable) {
-    return interaction.reply({ content: "Role not editable.", ephemeral: true });
-  }
+  if (!role.editable) return interaction.reply({ content: '❌ Role not editable.', ephemeral: true });
 
-  if (!rainbowData[interaction.guild.id])
-    rainbowData[interaction.guild.id] = {};
+  if (!rainbowData.has(interaction.guild.id)) rainbowData.set(interaction.guild.id, new Map());
+  if (!knownRoles.has(interaction.guild.id)) knownRoles.set(interaction.guild.id, new Map());
 
-  if (!knownRoles[interaction.guild.id]) knownRoles[interaction.guild.id] = {};
-  knownRoles[interaction.guild.id][role.id] = { name: role.name, lastSpeed: speed };
+  knownRoles.get(interaction.guild.id).set(role.id, { name: role.name, lastSpeed: speed });
 
   if (interaction.commandName === 'rainbow-start') {
-    rainbowData[interaction.guild.id][role.id] = speed;
+    rainbowData.get(interaction.guild.id).set(role.id, speed);
     saveData();
     return interaction.reply(`🌈 Rainbow started on ${role.name}`);
   }
 
   if (interaction.commandName === 'rainbow-stop') {
-    delete rainbowData[interaction.guild.id][role.id];
+    rainbowData.get(interaction.guild.id).delete(role.id);
     saveData();
     return interaction.reply(`🛑 Rainbow stopped on ${role.name}`);
   }
 });
 
-/* ============================================================
-   🌐 DASHBOARD SERVER
-============================================================ */
-
+/* ================= DASHBOARD ================= */
 const app = express();
 app.use(express.json());
 
 app.get('/api/data', (_, res) => {
-  const dataWithStopped = {};
-  for (const guildId in knownRoles) {
-    dataWithStopped[guildId] = {};
-    for (const roleId in knownRoles[guildId]) {
-      dataWithStopped[guildId][roleId] =
-        rainbowData[guildId]?.[roleId] ||
-        knownRoles[guildId][roleId]?.lastSpeed ||
-        0;
-    }
-  }
-  res.json(dataWithStopped);
+  const data = {};
+  knownRoles.forEach((roles, guildId) => {
+    data[guildId] = {};
+    roles.forEach((info, roleId) => {
+      const speed = rainbowData.get(guildId)?.get(roleId) || info.lastSpeed || 0;
+      data[guildId][roleId] = speed;
+    });
+  });
+  res.json(data);
 });
 
 app.post('/api/start', (req, res) => {
   const { guildId, roleId, speed } = req.body;
-  if (!rainbowData[guildId]) rainbowData[guildId] = {};
-  const actualSpeed = Math.max(speed || 1000, 500);
-  rainbowData[guildId][roleId] = actualSpeed;
-
+  if (!rainbowData.has(guildId)) rainbowData.set(guildId, new Map());
+  rainbowData.get(guildId).set(roleId, Math.max(speed || 1000, 500));
   saveData();
   res.json({ success: true });
 });
 
 app.post('/api/stop', (req, res) => {
   const { guildId, roleId } = req.body;
-  if (rainbowData[guildId]) delete rainbowData[guildId][roleId];
+  rainbowData.get(guildId)?.delete(roleId);
   saveData();
   res.json({ success: true });
 });
 
 app.get('/api/activeColors', (_, res) => {
-  const colors = {};
-  activeRoles.forEach((data, roleId) => {
-    if (!colors[data.guildId]) colors[data.guildId] = {};
-    colors[data.guildId][roleId] = data.lastColor || 0;
+  const data = {};
+  activeRoles.forEach((roles, guildId) => {
+    data[guildId] = {};
+    roles.forEach((info, roleId) => (data[guildId][roleId] = info.lastColor || 0));
   });
-  res.json(colors);
+  res.json(data);
 });
 
-app.listen(PORT, () =>
-  console.log("🌐 Rainbow dashboard running on port", PORT)
-);
+app.listen(PORT, () => console.log(`🌐 Rainbow dashboard running on port ${PORT}`));
 
-/* ============================================================
-   LOGIN
-============================================================ */
-
-client.once('ready', () => {
-  console.log(`Logged in as ${client.user.tag}`);
-});
-
+/* ================= LOGIN ================= */
+client.once('ready', () => console.log(`🤖 Logged in as ${client.user.tag}`));
 client.login(TOKEN);
